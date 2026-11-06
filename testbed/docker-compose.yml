@@ -1,0 +1,80 @@
+# TIM testbed: a fabricated "expired certificate" fault and a simulated
+# time-locked device, so TIM can be exercised without the real hardware.
+#
+#   cd testbed
+#   docker compose build
+#   docker compose run --rm device         # real clock  -> DEVICE STUCK (expired)
+#   docker compose run --rm device-fixed   # time via TIM -> DEVICE WORKING
+#   docker compose run --rm tim tim certs --root /certs/ca.pem server:8443
+#   docker compose down -v                 # clean up (removes the certs volume)
+
+name: tim-testbed
+
+x-image: &img
+  build:
+    context: ..
+    dockerfile: testbed/Dockerfile
+  image: tim-testbed:latest
+
+services:
+  # Generates the CA + expired leaf into the shared volume, then exits.
+  certgen:
+    <<: *img
+    command: ["tim-gen", "-out", "/certs", "-host", "server",
+              "-not-before", "2023-01-01", "-not-after", "2024-01-01"]
+    volumes:
+      - certs:/certs
+
+  # The vendor server, presenting the expired certificate.
+  server:
+    image: nginx:alpine
+    volumes:
+      - certs:/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  # TIM's time servers. Fixed at a date inside the leaf's validity window.
+  tim:
+    <<: *img
+    command: ["tim", "serve", "--std-ports", "--listen", "0.0.0.0",
+              "--time", "2023-06-01T00:00:00Z"]
+
+  # Time-locked device using its real clock: rejects the expired cert.
+  device:
+    <<: *img
+    command: ["tim-device"]
+    environment:
+      SERVER: "https://server:8443/"
+      CA: "/certs/ca.pem"
+      TIME_SOURCE: "${TIME_SOURCE:-real}"
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      server:
+        condition: service_healthy
+
+  # Same device, but it gets the time from TIM over NTP: it connects.
+  device-fixed:
+    <<: *img
+    command: ["tim-device"]
+    environment:
+      SERVER: "https://server:8443/"
+      CA: "/certs/ca.pem"
+      TIME_SOURCE: "ntp://tim:123"
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      server:
+        condition: service_healthy
+      tim:
+        condition: service_started
+
+volumes:
+  certs:
