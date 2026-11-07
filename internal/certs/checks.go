@@ -33,7 +33,7 @@ type notableCA struct {
 
 var notableCAs = []notableCA{
 	{[]string{"emsign", "emudhra"},
-		"eMudhra/emSign: browsers began distrusting eMudhra in Oct 2026 after private keys of sub-CAs under emSign ECC Root CA - G3 were found to be derivable, and eMudhra is leaving the TLS business. Old devices may still trust it, which also means anyone who works out those keys could pose as this server to the device. If the vendor has moved to another CA, no fake date will help; use --root to check."},
+		"eMudhra/emSign issuer detected. CA-name matching alone does not establish compromise or current trust status. If the server now chains to a CA absent from the device trust store, changing time cannot repair trust; use --root to check."},
 	{[]string{"dst root ca x3"},
 		"DST Root CA X3 (the old Let's Encrypt root) expired 2021-09-30. Devices that only trust it can never accept a certificate issued after that date, because no single date is valid for both. Use --root to check."},
 	{[]string{"addtrust external ca root"},

@@ -184,7 +184,7 @@ func hokMsg(e *HoKEntry) string {
 	if where == "" {
 		where = "unknown products"
 	}
-	return fmt.Sprintf("PRIVATE KEY IS PUBLIC (House of Keys %s): found in firmware of %s%s. Anyone can impersonate this endpoint.", e.Files[0][:12], where, more)
+	return fmt.Sprintf("PRIVATE KEY IS PUBLIC (House of Keys %s): found in firmware of %s%s. Anyone can impersonate this endpoint.", shortHoKID(e), where, more)
 }
 
 func dedupe(fs []Finding) []Finding {
@@ -258,6 +258,7 @@ func Print(w io.Writer, target string, chain []*x509.Certificate, o Options) {
 		for _, r := range pr.Reasons {
 			fmt.Fprintf(w, "    - %s\n", r)
 		}
+		PrintTrustRepair(w, chain, o.Host, o.Now)
 		return
 	}
 	var names []string
@@ -274,4 +275,15 @@ func Print(w io.Writer, target string, chain []*x509.Certificate, o Options) {
 		return
 	}
 	fmt.Fprintf(w, "  Suggested: --time %s\n", Suggest(pr.From, pr.To).Format(time.RFC3339))
+}
+
+func shortHoKID(e *HoKEntry) string {
+	if len(e.Files) == 0 {
+		return "unknown"
+	}
+	id := e.Files[0]
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return id
 }

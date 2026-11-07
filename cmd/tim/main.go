@@ -1,5 +1,5 @@
-// Command tim (Time In the Middle) feeds a device a fake clock so that
-// expired certificates look valid again.
+// Command tim (Time In the Middle) provides network time control and
+// certificate diagnostics for testing, troubleshooting and compatibility work.
 package main
 
 import (
@@ -26,12 +26,15 @@ import (
 	"tim/internal/spoof"
 )
 
+const version = "0.1.0-beta.1"
+
 const usage = `TIM - Time In the Middle
 
-Runs a WiFi access point that gives connected devices a fake time, so a
-device stuck on an expired certificate works again.
+Network time control and certificate diagnostics for testing, troubleshooting
+and compatibility work. Run standalone time services or a controlled WiFi AP.
 
 Usage:
+  tim version                                   print version
   tim check    --ap wlan1 --uplink eth0           preflight checks
   tim discover --ap wlan1 --uplink eth0 [...]     run the AP, watch how devices get the time
   tim up       --ap wlan1 --uplink eth0 --time 2024-01-01 [...]
@@ -39,6 +42,7 @@ Usage:
   tim down     [--ap wlan1]                       clean up after a crash
   tim certs    [--root ca.pem] [--hok dir] host[:port]|file ...
                                                   cert validity, device-root check, known-bad keys
+  tim hok update                               refresh fingerprint-only cache
   tim serve    --listen 127.0.0.1 --time ...      spoofers only (no AP or firewall), for testing
 
 Run "tim <command> -h" for a command's flags.
@@ -56,6 +60,9 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	var err error
 	switch cmd {
+	case "version", "--version":
+		fmt.Println("TIM " + version)
+		return
 	case "up":
 		err = cmdUp(args)
 	case "discover":
@@ -64,6 +71,8 @@ func main() {
 		err = cmdDown(args)
 	case "check":
 		err = cmdCheck(args)
+	case "hok":
+		err = cmdHoK(args)
 	case "certs":
 		err = cmdCerts(args)
 	case "serve":
@@ -236,7 +245,11 @@ func startSpoofers(host string, enabled map[string]bool, httpPorts []int, clk sp
 		redirs = append(redirs, fw.Redirect{Proto: "tcp", Port: 13, ToPort: ports[2]}, fw.Redirect{Proto: "udp", Port: 13, ToPort: ports[2]})
 	}
 	if enabled["http"] {
-		s, err := spoof.NewHTTPDate(addr(ports[3]), clk, logf, spoof.OriginalDst)
+		var originalDst spoof.OrigDstFunc
+		if len(httpPorts) > 0 {
+			originalDst = spoof.OriginalDst
+		}
+		s, err := spoof.NewHTTPDate(addr(ports[3]), clk, logf, originalDst)
 		if err != nil {
 			return fail(fmt.Errorf("http: %w", err))
 		}
@@ -542,7 +555,8 @@ func cmdCerts(args []string) error {
 	timeout := fs.Duration("timeout", 10*time.Second, "connect timeout")
 	var rootFiles multiFlag
 	fs.Var(&rootFiles, "root", "device's trusted root cert or CA bundle (PEM/DER); repeatable")
-	hokDir := fs.String("hok", os.Getenv("TIM_HOK"), "path to a clone of github.com/sec-consult/houseofkeys (or set TIM_HOK)")
+	hokDir := fs.String("hok", os.Getenv("TIM_HOK"), "dataset directory, fingerprint cache file, or off (default: local cache; TIM_HOK supported)")
+	exportFile := fs.String("export", "", "export one target's observed chain to a new PEM file (not automatically trusted)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: tim certs [flags] host[:port] | cert-file ...")
 		fs.PrintDefaults()
@@ -553,6 +567,9 @@ func cmdCerts(args []string) error {
 		return errors.New("no targets")
 	}
 
+	if *exportFile != "" && fs.NArg() != 1 {
+		return errors.New("--export requires exactly one target")
+	}
 	opts := certs.Options{Now: time.Now()}
 	for _, f := range rootFiles {
 		rs, err := certs.LoadFile(f)
@@ -564,13 +581,31 @@ func cmdCerts(args []string) error {
 	if len(opts.Roots) > 0 {
 		fmt.Printf("device roots: %d certificate(s) from %s\n", len(opts.Roots), strings.Join(rootFiles, ", "))
 	}
-	if *hokDir != "" {
-		h, err := certs.LoadHoK(*hokDir)
+	if *hokDir != "off" {
+		var h *certs.HoK
+		var err error
+		if *hokDir == "" {
+			var file string
+			file, err = certs.HoKCachePath()
+			if err == nil {
+				h, err = certs.LoadHoKCache(file)
+			}
+			if err != nil {
+				logf("House of Keys cache unavailable: %v (run tim hok update; --hok off disables)", err)
+				err = nil
+			}
+		} else if st, statErr := os.Stat(*hokDir); statErr == nil && st.IsDir() {
+			h, err = certs.LoadHoK(*hokDir)
+		} else {
+			h, err = certs.LoadHoKCache(*hokDir)
+		}
 		if err != nil {
 			return fmt.Errorf("--hok: %w", err)
 		}
 		opts.HoK = h
-		fmt.Printf("House of Keys: %d known-compromised public keys (%d certs, %d private keys)\n", h.Len(), h.Stats.Certs, h.Stats.Keys)
+		if h != nil {
+			fmt.Printf("House of Keys: %d known-compromised public keys\n", h.Len())
+		}
 	}
 	fmt.Println()
 
@@ -582,6 +617,9 @@ func cmdCerts(args []string) error {
 			chain, err = certs.LoadFile(t)
 			if err != nil {
 				if ders, derr := certs.LoadDERs(t); derr == nil && len(ders) > 0 {
+					if *exportFile != "" {
+						return fmt.Errorf("cannot export unparseable certificate: %w", err)
+					}
 					certs.PrintRaw(os.Stdout, t, ders, err, o)
 					fmt.Println()
 					continue
@@ -600,6 +638,12 @@ func cmdCerts(args []string) error {
 				continue
 			}
 			o.Host = host
+		}
+		if *exportFile != "" {
+			if err := certs.Export(*exportFile, chain); err != nil {
+				return fmt.Errorf("export: %w", err)
+			}
+			fmt.Printf("Exported observed chain to %s (not a verified trust bundle).\n", *exportFile)
 		}
 		certs.Print(os.Stdout, t, chain, o)
 		fmt.Println()
@@ -647,5 +691,23 @@ func cmdServe(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	<-ctx.Done()
+	return nil
+}
+
+func cmdHoK(args []string) error {
+	if len(args) != 1 || args[0] != "update" {
+		return errors.New("usage: tim hok update")
+	}
+	file, err := certs.HoKCachePath()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	h, err := certs.UpdateHoK(ctx, file)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Cached %d public-key fingerprints from %s in %s; temporary raw dataset removed.\n", h.Len(), certs.HoKCommit, file)
 	return nil
 }

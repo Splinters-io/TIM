@@ -44,7 +44,12 @@ services:
   tim:
     <<: *img
     command: ["tim", "serve", "--std-ports", "--listen", "0.0.0.0",
-              "--time", "2023-06-01T00:00:00Z"]
+              "--time", "2023-06-01T00:00:00Z", "--freeze"]
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      server:
+        condition: service_healthy
 
   # Time-locked device using its real clock: rejects the expired cert.
   device:
@@ -54,6 +59,7 @@ services:
       SERVER: "https://server:8443/"
       CA: "/certs/ca.pem"
       TIME_SOURCE: "${TIME_SOURCE:-real}"
+      HTTP_HOST: "${HTTP_HOST:-server}"
     volumes:
       - certs:/certs:ro
     depends_on:
@@ -67,7 +73,8 @@ services:
     environment:
       SERVER: "https://server:8443/"
       CA: "/certs/ca.pem"
-      TIME_SOURCE: "ntp://tim:123"
+      TIME_SOURCE: "${TIME_SOURCE:-ntp://tim:123}"
+      HTTP_HOST: "${HTTP_HOST:-server}"
     volumes:
       - certs:/certs:ro
     depends_on:

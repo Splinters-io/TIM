@@ -1,13 +1,25 @@
 # TIM: Time In the Middle
 
-Gets devices working again when they're stuck on an expired certificate.
+**Experimental beta — v0.1.0-beta.1.** A network time-control and
+certificate-diagnostics toolkit for Linux.
 
-A lot of devices (IoT gadgets, set-top boxes, printers, old tablets) stop
-working when a TLS certificate they depend on expires, either on the server or
-baked into the device. They check validity against their **own clock**. TIM
-puts the device on a WiFi network that you control and tells it the date is
-one when the certificate was still valid. Everything else goes through to the
-real internet unchanged.
+[Download the beta](https://github.com/Splinters-io/TIM/releases/tag/v0.1.0-beta.1)
+· [Release notes](CHANGELOG.md) · [MIT licence](LICENSE)
+
+TIM lets you observe how network clients obtain time, serve a controlled clock,
+and inspect TLS certificate validity and trust paths. Use it for protocol tests,
+compatibility experiments, troubleshooting, lab environments, or investigating
+whether a different clock restores a device's connection. It is not tied to a
+particular device vendor, industry, or mission.
+
+Run time services on their own, or put a client on a WiFi network controlled by
+TIM. Choose a fixed date, a ticking clock anchored to a date, or an offset from
+real time. TIM changes selected time signals while forwarding other traffic,
+including HTTPS, to its original destination.
+
+Local protocol and TLS repair tests pass. Real Kali WiFi/AP testing is still
+pending, and the Docker Compose setup has not been exercised for this release.
+Device compatibility must be tested for each environment.
 
 ```
  [device] ))) wifi ))) [Kali: wlan1  --TIM--  eth0] ---> internet
@@ -51,6 +63,7 @@ boot or when they connect, so power-cycle it once it has joined.
 | `tim discover` | Runs the AP with real time and logs every time-related request per device (NTP, RFC 868, Daytime, NTS, Roughtime, PTP, time-ish DNS names, HTTP hosts, TLS SNI). Prints a report and a suggested `tim up` command |
 | `tim up` | Runs the AP and spoofs the time |
 | `tim down` | Cleans up after a crash: removes the `TIM`-tagged iptables rules, kills leftover hostapd/dnsmasq, restores `ip_forward` |
+| `tim hok update` | Downloads a pinned, checksum-verified House of Keys snapshot and caches only public-key fingerprints and product metadata |
 | `tim serve` | Spoofers only, no AP and no firewall. For testing, or for when you handle routing yourself |
 
 ### `tim up` options
@@ -96,31 +109,50 @@ tim certs --root ca-bundle.pem --hok ~/houseofkeys api.vendor.com
   dataset (567 distinct keys, including DSA and quirky firmware encodings)
   and flags any certificate whose private key has been published, along with
   the products it shipped in. Detection only: TIM never uses the leaked keys.
-- **Notable CAs:** warns when a chain involves eMudhra/emSign (distrusted in
-  Oct 2026), DST Root CA X3, AddTrust External CA Root, legacy
+- **Notable CAs:** identifies chains involving eMudhra/emSign, DST Root CA X3, AddTrust External CA Root, legacy
   Symantec/VeriSign, WoSign/StartCom, DigiNotar, CNNIC, TrustCor, Camerfirma,
   E-Tugra or Entrust, with what each means for an old device.
 - **Weak keys:** ROCA (CVE-2017-15361) moduli, RSA under 2048 bits, and
   MD5/SHA-1 signatures. Certificates Go can't parse (common in firmware)
   still get the House of Keys check.
 
-### eMudhra / emSign
+### Offline key checks and certificate export
 
-Browsers started distrusting eMudhra in October 2026, and eMudhra is leaving
-the TLS business. For an old device that trusts eMudhra:
+```bash
+tim hok update                              # explicit download; no automatic network updates
+tim certs api.vendor.com                     # uses the cached fingerprints
+tim certs --hok off api.vendor.com           # or TIM_HOK=off
+tim certs --export observed-chain.pem api.vendor.com
+```
 
-1. **The server's eMudhra certificate expired:** a normal expiry, so TIM
-   works.
-2. **The vendor moved the server to another CA:** no fake date helps, and
-   `--root` will say so. It needs a firmware or root-store update.
-3. **The device checks revocation (OCSP/CRL):** a date in the past can make
-   fresh OCSP responses look "not yet valid". Most embedded clients don't
-   check or ignore failures; `tim discover` shows OCSP/CRL requests in its
-   HTTP list.
+The updater pins House of Keys commit
+`b4c8ee416f1c494b033ae930d464a37809ed61d8` and verifies the archive's SHA-256
+before indexing it. Temporary raw files are removed after indexing; the cache
+contains 567 public-key fingerprints, file IDs, and product descriptions.
+The cache is in the OS user cache directory: `~/.cache/tim/houseofkeys.json`
+on Linux (or `$XDG_CACHE_HOME/tim/houseofkeys.json`) and
+`~/Library/Caches/tim/houseofkeys.json` on macOS. Run the updater as the same
+user who runs `certs`. A failed update preserves the previous cache.
+`--hok` can also select a dataset directory or a copied fingerprint JSON cache.
+Without a cache, certificate checks still run and report that key checks are unavailable.
 
-A device that still trusts emSign ECC Root CA - G3 can also be fooled by
-anyone who works out those keys. Treat that as a reason to update or replace
-the device.
+`--export FILE` accepts one target and writes its observed certificates as PEM,
+refusing to overwrite an existing file. Inspection deliberately accepts expired
+or untrusted chains, so this export is **not an authenticated root bundle**.
+Servers generally omit their root. When the device-root check fails, TIM shows
+the presented issuer and, if current system verification succeeds, the root
+candidate's name and SHA-256 fingerprint. Obtain the matching root from the CA's
+official distribution before updating a device's trust store. If verification
+fails, TIM reports that it cannot identify a trusted replacement root.
+
+### Expiry versus trust-store changes
+
+A device may fail because a certificate expired, because its trusted roots no
+longer match the server's chain, or because validation fails for another reason.
+Use `tim certs --root device-ca-bundle.pem host` to distinguish these cases.
+A different date cannot add a missing trusted root. CA-name matches are
+informational heuristics; they are not proof of compromise or current browser
+trust status. OCSP/CRL validation can also fail when a clock is moved backwards.
 
 ## What can and can't be spoofed
 
@@ -159,6 +191,7 @@ the device.
 ```bash
 make test     # unit tests (macOS or Linux)
 make linux    # static Linux binaries in dist/
+go test ./testbed/device -v  # real TLS failure, then NTP/HTTP-time repair; no Docker needed
 ./dist/tim serve --time 2024-01-01        # local spoofers on 127.0.0.1:10123/10037/10013/10080
 ```
 
@@ -173,3 +206,18 @@ To test against the real House of Keys dataset:
 ```bash
 TIM_HOK=~/houseofkeys go test ./internal/certs -run Dataset -v
 ```
+
+## Licence and third-party data
+
+TIM source code is licensed under the [MIT licence](LICENSE).
+The optional House of Keys dataset is maintained by
+[SEC Consult](https://github.com/sec-consult/houseofkeys) and is downloaded only
+when requested. It is not included in the source or release binaries. TIM's
+licence does not relicense that dataset or its product metadata.
+
+## Beta feedback
+
+[Open an issue](https://github.com/Splinters-io/TIM/issues) with `tim version`,
+your Kali/kernel version, WiFi adapter and driver, command used, expected versus
+actual behavior, and relevant logs. Remove passwords and sensitive device or
+network details before posting. Hardware test results are especially welcome.

@@ -33,8 +33,8 @@ docker compose run --rm device
 docker compose run --rm device-fixed
 
 # 3. Diagnose the cert the way you would a real host
-docker compose run --rm tim tim certs server:8443
-docker compose run --rm tim tim certs --root /certs/ca.pem server:8443
+docker compose run --rm tim tim certs --hok off server:8443
+docker compose run --rm tim tim certs --hok off --root /certs/ca.pem server:8443
 
 docker compose down -v   # stop and delete the certs volume
 ```
@@ -48,8 +48,9 @@ data; step 3 shows the expired window and suggests a `--time`.
 - **Different fault date:** edit `certgen`'s `-not-before`/`-not-after` in
   `docker-compose.yml`, then `docker compose up certgen --build`.
 - **HTTP Date path instead of NTP:** run the device with
-  `TIME_SOURCE=http://tim/` and `HTTP_HOST=server` to pull the clock from the
-  rewritten HTTP `Date:` header (TIM proxies to `server:80`).
+  `TIME_SOURCE=http://tim/ HTTP_HOST=server docker compose run --rm device-fixed`
+  to pull the clock from the rewritten HTTP `Date:` header (TIM proxies to
+  `server:80`; using `device-fixed` starts TIM as a dependency).
 - **"Vendor switched CA" case:** generate a second, unrelated CA and pass only
   that to the device via `CA=`; `tim certs --root` will report that no date can
   fix it — the trust-store case from `PROJECT.md`.
@@ -58,3 +59,12 @@ data; step 3 shows the expired window and suggests a `--time`.
 > straight at `tim serve`. It does not run the hostapd/dnsmasq/iptables AP
 > path (that needs real WiFi hardware and `NET_ADMIN`); test that on the Kali
 > box.
+
+## Without Docker
+
+From the repository root, `go test ./testbed/device -v` starts disposable local
+TLS, NTP and HTTP servers on ephemeral ports. It checks an expired certificate
+fails against real time, succeeds after each TIM time source, and still fails
+with an unrelated trust store. No root access or external services are needed.
+This exercises protocol behavior; it does not validate the Compose configuration
+or the Linux AP/firewall path.
