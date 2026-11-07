@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.1.0-beta.2 — 2026-11-07
+
+### Added
+
+- `tim tls-time`: standalone HTTPS Date endpoint using an engineer-supplied
+  PEM certificate chain and matching private key.
+- GET/HEAD on `/` and `/time`, RFC3339 GET body and cache-disabled responses.
+- Shared fixed, ticking and offset scenario clocks; loopback:10443 by default.
+- TLS 1.2 minimum by default, TLS 1.3 support and explicit 1.0/1.1 legacy opt-in.
+- Network tests for TLS 1.0–1.3, GET/HEAD behavior, wrong hostname, untrusted CA,
+  expired certificate, mismatched/missing keys and server shutdown.
+- Expanded capability matrix and hardware/software roadmap.
+
+### Compatibility limits
+
+This is an HTTPS Date endpoint, not a transparent TLS proxy or a legacy
+ServerHello timestamp generator. Clients still validate the supplied certificate
+using their own trust, hostname and clock. Legacy protocol negotiation is tested
+with Go clients; no physical legacy-device or tlsdate-binary compatibility is
+claimed. Kali AP/hardware and Docker Compose validation remain pending.
+
+Linux amd64/arm64 binaries and SHA256SUMS accompany this pre-release. The
+v0.1.0-beta.1 release remains available unchanged.
+
 ## v0.1.0-beta.1 — 2026-11-07
 
 First public experimental beta of TIM (Time In the Middle), a general-purpose

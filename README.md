@@ -1,9 +1,9 @@
 # TIM: Time In the Middle
 
-**Experimental beta — v0.1.0-beta.1.** A network time-control and
+**Experimental beta — v0.1.0-beta.2.** A network time-control and
 certificate-diagnostics toolkit for Linux.
 
-[Download the beta](https://github.com/Splinters-io/TIM/releases/tag/v0.1.0-beta.1)
+[Download the beta](https://github.com/Splinters-io/TIM/releases/tag/v0.1.0-beta.2)
 · [Release notes](CHANGELOG.md) · [MIT licence](LICENSE)
 
 TIM lets you observe how network clients obtain time, serve a controlled clock,
@@ -64,6 +64,7 @@ boot or when they connect, so power-cycle it once it has joined.
 | `tim up` | Runs the AP and spoofs the time |
 | `tim down` | Cleans up after a crash: removes the `TIM`-tagged iptables rules, kills leftover hostapd/dnsmasq, restores `ip_forward` |
 | `tim hok update` | Downloads a pinned, checksum-verified House of Keys snapshot and caches only public-key fingerprints and product metadata |
+| `tim tls-time` | Serves a controlled HTTPS Date using engineer-supplied certificates and keys |
 | `tim serve` | Spoofers only, no AP and no firewall. For testing, or for when you handle routing yourself |
 
 ### `tim up` options
@@ -154,19 +155,77 @@ A different date cannot add a missing trusted root. CA-name matches are
 informational heuristics; they are not proof of compromise or current browser
 trust status. OCSP/CRL validation can also fail when a clock is moved backwards.
 
-## What can and can't be spoofed
+## TLS time endpoint
 
-| Time source | Spoofed? | How |
+Serve time using a PEM certificate chain (leaf first) and its matching,
+unencrypted PEM private key:
+
+```bash
+./tim tls-time --listen 127.0.0.1:10443 \
+  --cert time-chain.pem --key time-key.pem \
+  --time 2024-01-01 --freeze
+
+# Replace time.example.test with a hostname in your certificate's SAN.
+curl --noproxy '*' --cacert time-ca.pem \
+  --resolve time.example.test:10443:127.0.0.1 \
+  -I https://time.example.test:10443/time
+```
+
+`GET` and `HEAD` on `/` or `/time` return the scenario clock in the HTTPS
+`Date` header; GET also returns an RFC3339 timestamp. Responses use `no-store`.
+The existing `--time`, `--offset` and `--freeze` options apply. The default
+listener is loopback port 10443; select a reachable address explicitly for
+another device. This endpoint serves time only and does not proxy applications
+or redirect port 443 traffic. Keys are read locally and never included in
+responses or release artifacts. Restart to load replacement credentials.
+
+TLS 1.2 is the default minimum, with TLS 1.3 also supported. For a specific
+legacy client, `--min-tls 1.0` or `--min-tls 1.1` explicitly enables older
+protocol versions. Compatible ciphers, certificate algorithms and client trust
+are still required; SSLv3 and arbitrary obsolete cipher suites are not enabled.
+Tests cover Go clients using TLS 1.0 through 1.3, not every legacy device.
+
+The client must accept the chain, hostname and certificate validity at its
+current validation time before it can read HTTPS time. Supplying an expired
+certificate does not make it valid, and the scenario clock does not change TLS
+verification or cryptographic randomness. Use appropriate credentials and
+configure the test client's trust when needed. Pinning and independent clock
+sources can still prevent adoption of the supplied time.
+
+This supports HTTPS Date clients. It does **not** synthesize legacy TLS
+ServerHello timestamps for handshake-based `tlsdate`; that remains separate
+compatibility work. No claim of tested tlsdate-binary compatibility is made.
+
+### Legacy trust stores
+
+The [Fireblocks eMudhra advisory](https://www.fireblocks.com/blog/emudhra-certificate-compromise)
+reports compromised intermediate certificates and describes updating affected
+trust stores. It is relevant to diagnosing legacy trust, but does not establish
+that a given device trusts a given certificate. Use engineer-provided endpoint
+credentials and test the actual chain and client behavior. TIM does not bundle
+CA private keys or use the House of Keys dataset to issue certificates.
+
+## Current time-source support
+
+| Time source | Supported in beta? | Mechanism or extension requirement |
 |---|---|---|
 | NTP / SNTP v1-4 (any server, hard-coded or not) | ✅ | DHCP option 42 points at TIM, and all udp/123 is REDIRECTed to TIM |
 | RFC 868 Time (37), RFC 867 Daytime (13) | ✅ | DHCP option 4 + REDIRECT |
 | HTTP `Date:` header | ✅ | transparent proxy rewrites only the Date header |
 | NTS (authenticated NTP) | ❌ | `--block-nts` may force a fallback to plain NTP |
-| HTTPS Date, tlsdate, Roughtime | ❌ | cryptographically signed |
-| GPS, cellular, battery RTC | ❌ | not network time; a different problem |
+| HTTPS Date | Yes, standalone endpoint | `tim tls-time` with engineer-supplied credentials accepted by the client |
+| tlsdate | Not yet | Client/version-specific handshake-time or HTTP Date testing with a compatible controlled endpoint |
+| Roughtime | Not yet | Controlled signer trusted by the test client; authenticated responses cannot simply be rewritten |
+| GPS/GNSS | Not yet | Receiver-data simulation, NMEA/PPS hardware adapters, or a conducted/shielded GNSS simulator |
+| Cellular time | Not yet | Modem/OS test hooks or an isolated cellular test network; separate from WiFi routing |
+| Battery-backed RTC | Not yet | Device-local clock API, service/debug access, or a chip-specific hardware interface |
 | IPv6 time traffic | ➖ | the TIM AP hands out IPv4 only, so devices normally use v4 |
 
-`discover` tells you which of these the device uses.
+`discover` observes supported network traffic; it cannot directly observe an
+internal RTC, GNSS receiver bus or cellular control plane. “Not yet” describes
+TIM's implementation, not a claim that the source cannot be controlled.
+See [the expansion roadmap](ROADMAP.md) for proposed software and hardware
+backends and their prerequisites.
 
 ## Things to know
 

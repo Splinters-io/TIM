@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"flag"
@@ -26,7 +27,7 @@ import (
 	"tim/internal/spoof"
 )
 
-const version = "0.1.0-beta.1"
+const version = "0.1.0-beta.2"
 
 const usage = `TIM - Time In the Middle
 
@@ -34,6 +35,8 @@ Network time control and certificate diagnostics for testing, troubleshooting
 and compatibility work. Run standalone time services or a controlled WiFi AP.
 
 Usage:
+  tim tls-time --cert chain.pem --key key.pem --time 2024-01-01
+                                                  controlled HTTPS Date endpoint
   tim version                                   print version
   tim check    --ap wlan1 --uplink eth0           preflight checks
   tim discover --ap wlan1 --uplink eth0 [...]     run the AP, watch how devices get the time
@@ -71,6 +74,8 @@ func main() {
 		err = cmdDown(args)
 	case "check":
 		err = cmdCheck(args)
+	case "tls-time":
+		err = cmdTLSTime(args)
 	case "hok":
 		err = cmdHoK(args)
 	case "certs":
@@ -710,4 +715,54 @@ func cmdHoK(args []string) error {
 	}
 	fmt.Printf("Cached %d public-key fingerprints from %s in %s; temporary raw dataset removed.\n", h.Len(), certs.HoKCommit, file)
 	return nil
+}
+
+func cmdTLSTime(args []string) error {
+	fs := flag.NewFlagSet("tls-time", flag.ContinueOnError)
+	var cf clockFlags
+	cf.register(fs)
+	listen := fs.String("listen", "127.0.0.1:10443", "HTTPS listen address including port")
+	certFile := fs.String("cert", "", "PEM server certificate chain, leaf first")
+	keyFile := fs.String("key", "", "matching unencrypted PEM private key")
+	minTLS := fs.String("min-tls", "1.2", "minimum TLS version: 1.0, 1.1, 1.2, or 1.3 (legacy versions require explicit opt-in)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if *certFile == "" || *keyFile == "" {
+		return errors.New("both --cert and --key are required")
+	}
+	versions := map[string]uint16{"1.0": tls.VersionTLS10, "1.1": tls.VersionTLS11, "1.2": tls.VersionTLS12, "1.3": tls.VersionTLS13}
+	minimum, ok := versions[*minTLS]
+	if !ok {
+		return errors.New("--min-tls must be 1.0, 1.1, 1.2, or 1.3")
+	}
+	clk, err := cf.build()
+	if err != nil {
+		return err
+	}
+	svc, err := spoof.NewTLSTime(*listen, *certFile, *keyFile, minimum, clk)
+	if err != nil {
+		return err
+	}
+	defer svc.Close()
+	ctx, cancel := signalContext()
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- svc.Serve() }()
+	logf("HTTPS time listening on %s (minimum TLS %s); %s", svc.Addr(), *minTLS, clk.Describe())
+	if minimum < tls.VersionTLS12 {
+		logf("legacy TLS enabled explicitly; compatibility depends on the client's ciphers and certificate support")
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return nil
+	}
 }

@@ -78,7 +78,9 @@ and check firewall cleanup and restoration of the original forwarding setting.
 
 TIM diagnoses certificate failures and changes network time signals so a device
 can test certificate validation at another date. HTTPS is forwarded unchanged.
-It does not install trust anchors, forge certificates, or terminate device TLS.
+It does not install trust anchors or forge certificates. The explicit
+`tls-time` service terminates connections directed to that time endpoint using
+engineer-supplied credentials; ordinary AP-forwarded HTTPS remains unchanged.
 House of Keys data is used only for public-key fingerprint detection.
 
 Compatibility with specific devices and environments remains unverified. See
@@ -95,3 +97,11 @@ internal/fw/        iptables NAT/REDIRECT, tagged teardown
 internal/discover/  raw-socket capture + per-device report
 internal/certs/     chain inspection, device-root path search, HoK, weak keys
 ```
+
+## Beta 2 — controlled HTTPS time
+
+`tim tls-time` serves the shared scenario clock over HTTPS with operator-supplied
+PEM certificates and keys. The endpoint defaults to loopback:10443 and TLS 1.2;
+legacy TLS 1.0/1.1 requires explicit opt-in. Tests cover authenticated Date
+responses, rejection paths and shutdown. Handshake-timestamp tlsdate support
+and physical legacy-device validation remain pending. See README and ROADMAP.
